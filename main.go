@@ -1,26 +1,55 @@
 package main
 
 import (
-    "log"
-    "net/http"
+	"fmt"
+	"log"
+	"net/http"
+	"sync/atomic"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
 
 func main() {
+	handler := http.NewServeMux()
+	port := "8080"
+	filePathRoot := "."
 
-    handler := http.NewServeMux()
+	fmt.Println("Server starting on port", port)
 
-    server := http.Server{
-        Handler: handler,
-        Addr:    ":8080",
-    }
+	apiCfg := &apiConfig{
+		fileserverHits: atomic.Int32{},
+	}
 
-    err := server.ListenAndServe()
-    if err != nil {
-        log.Fatal("Error with the server")
-        return
-    }
+	// Handle /app/ prefix
+	handler.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filePathRoot)))))
+	handler.HandleFunc("/healthz", heartBeat)
+	handler.HandleFunc("/metrics", apiCfg.printMetrics)
+	handler.HandleFunc("/reset", apiCfg.resetMetrics)
 
+	server := &http.Server{
+		Handler: handler,
+		Addr:    ":" + port,
+	}
+
+	err := server.ListenAndServe()
+	if err != nil {
+		log.Fatal("Error with the server")
+		return
+	}
+
+}
+
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg.fileserverHits.Add(1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (cfg *apiConfig) printMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf("Hits: %d", cfg.fileserverHits.Load())))
 }
